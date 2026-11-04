@@ -3,12 +3,36 @@ import argparse
 import os
 import re
 import sys
+from datetime import datetime
 
 OUTPUT_FILE = "access.log"
 DEFAULT_KEY = "MAYDAY"
 BRUTE_FORCE_THRESHOLD = 5
+REPEATED_403_THRESHOLD = 5
+TIMESTAMP_FORMAT = "%d/%b/%Y:%H:%M:%S %z"
 SQL_INJECTION_PATTERNS = ("DROP TABLE", "OR 1=1", "OR '1'='1'")
 DIRECTORY_TRAVERSAL_REGEX = re.compile(r"\.\./")
+SENSITIVE_FILES = (
+    ".env",
+    ".git",
+    ".htaccess",
+    ".htpasswd",
+    "auth.log",
+    "backup.sql",
+    "config.php",
+    "db.sqlite",
+    "etc/hosts",
+    "etc/passwd",
+    "etc/shadow",
+    "id_rsa",
+    "win.ini",
+    "wp-config.php",
+)
+# The lookarounds match whole names only, so .env does not match /.environment.
+SENSITIVE_FILE_REGEX = re.compile(
+    r"(?<![\w-])(?:" + "|".join(map(re.escape, SENSITIVE_FILES)) + r")(?![\w-])",
+    re.IGNORECASE,
+)
 BOLD_RED = "\033[1;31m"
 BOLD = "\033[1m"
 CYAN = "\033[36m"
@@ -64,21 +88,31 @@ def record_attempt(attempts, ip, timestamp):
     attempts[ip]["last"] = timestamp
 
 
-def detect_brute_force(lines):
-    """Return {ip: details} for each IP with enough 401 responses."""
+def detect_repeated_status(lines, target_status, threshold):
+    """Return {ip: details} for each IP with at least threshold target_status responses."""
     attempts = {}
     for line in lines:
         parsed = parse_log_line(line)
         if parsed is None:
             continue
         ip, timestamp, _, status = parsed
-        if status == "401":
+        if status == target_status:
             record_attempt(attempts, ip, timestamp)
     return {
         ip: details
         for ip, details in attempts.items()
-        if details["count"] >= BRUTE_FORCE_THRESHOLD
+        if details["count"] >= threshold
     }
+
+
+def detect_brute_force(lines):
+    """Return {ip: details} for each IP with enough 401 responses."""
+    return detect_repeated_status(lines, "401", BRUTE_FORCE_THRESHOLD)
+
+
+def detect_repeated_403(lines):
+    """Return {ip: details} for each IP with enough 403 responses."""
+    return detect_repeated_status(lines, "403", REPEATED_403_THRESHOLD)
 
 
 def detect_sql_injection(lines):
@@ -107,6 +141,48 @@ def detect_directory_traversal(lines):
     return attempts
 
 
+def detect_sensitive_files(lines):
+    """Return {ip: details} for each IP whose requests target a sensitive file."""
+    attempts = {}
+    for line in lines:
+        parsed = parse_log_line(line)
+        if parsed is None:
+            continue
+        ip, timestamp, request, _ = parsed
+        if SENSITIVE_FILE_REGEX.search(request):
+            record_attempt(attempts, ip, timestamp)
+    return attempts
+
+
+def detect_multiple_attack_types(attacks):
+    """Return {ip: details} for each IP flagged by two or more attack types.
+
+    attacks maps each attack name to that attack's {ip: details} results.
+    """
+    by_ip = {}
+    for attack_name, attackers in attacks.items():
+        for ip, details in attackers.items():
+            by_ip.setdefault(ip, {})[attack_name] = details
+
+    multiple = {}
+    for ip, ip_attacks in by_ip.items():
+        if len(ip_attacks) < 2:
+            continue
+        firsts = [details["first"] for details in ip_attacks.values()]
+        lasts = [details["last"] for details in ip_attacks.values()]
+        multiple[ip] = {
+            "types": {name: details["count"] for name, details in ip_attacks.items()},
+            "first": min(firsts, key=parse_timestamp),
+            "last": max(lasts, key=parse_timestamp),
+        }
+    return multiple
+
+
+def parse_timestamp(timestamp):
+    """Return a log timestamp as a datetime so that timestamps can be compared."""
+    return datetime.strptime(timestamp, TIMESTAMP_FORMAT)
+
+
 def colorize(text, color):
     """Return text in the given color, or unchanged if color should not be used.
 
@@ -130,6 +206,28 @@ def print_alerts(attackers, attack_name, attempt_label):
         print(f"  {colorize('First Attempt:', CYAN)} {details['first']}")
         print(f"  {colorize('Last Attempt:', CYAN)} {details['last']}")
         print(f"  {colorize('Total Attempts:', CYAN)} {details['count']}")
+
+
+def print_multiple_attack_alerts(attackers):
+    """Print an alert and the attack details for each IP using several attack types.
+
+    Each type's count is shown separately rather than as a total, because one
+    request can count towards two types (an SQL injection that returns 403).
+    """
+    for ip, details in attackers.items():
+        tag = colorize("[ALERT]", BOLD_RED)
+        message = colorize(
+            f"Multiple attack types from {ip} ({len(details['types'])} attack types)",
+            BOLD,
+        )
+        attack_types = ", ".join(
+            f"{name} ({count})" for name, count in details["types"].items()
+        )
+        print(f"{tag} {message}")
+        print(f"  {colorize('Attacker IP:', CYAN)} {ip}")
+        print(f"  {colorize('Attack Types:', CYAN)} {attack_types}")
+        print(f"  {colorize('First Attempt:', CYAN)} {details['first']}")
+        print(f"  {colorize('Last Attempt:', CYAN)} {details['last']}")
 
 
 def main():
@@ -170,11 +268,31 @@ def main():
     brute_force_attackers = detect_brute_force(lines)
     sql_injection_attackers = detect_sql_injection(lines)
     directory_traversal_attackers = detect_directory_traversal(lines)
+    repeated_403_attackers = detect_repeated_403(lines)
+    sensitive_file_attackers = detect_sensitive_files(lines)
+    multiple_attack_attackers = detect_multiple_attack_types(
+        {
+            "Brute force": brute_force_attackers,
+            "SQL injection": sql_injection_attackers,
+            "Directory traversal": directory_traversal_attackers,
+            "Repeated 403": repeated_403_attackers,
+            "Sensitive files": sensitive_file_attackers,
+        }
+    )
     print_alerts(brute_force_attackers, "Brute force", "failed logins")
     print_alerts(sql_injection_attackers, "SQL injection", "attempts")
     print_alerts(directory_traversal_attackers, "Directory traversal", "attempts")
+    print_alerts(repeated_403_attackers, "Repeated 403 responses", "responses")
+    print_alerts(sensitive_file_attackers, "Sensitive file access", "requests")
+    print_multiple_attack_alerts(multiple_attack_attackers)
 
-    if brute_force_attackers or sql_injection_attackers or directory_traversal_attackers:
+    if (
+        brute_force_attackers
+        or sql_injection_attackers
+        or directory_traversal_attackers
+        or repeated_403_attackers
+        or sensitive_file_attackers
+    ):
         return 1
     return 0
 
