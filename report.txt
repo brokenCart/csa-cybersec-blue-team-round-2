@@ -1,0 +1,28 @@
+INCIDENT REPORT
+
+1. Executive Summary
+
+On 15 March 2024, between 08:45 and 12:04 UTC, the web application was targeted by eight IP addresses using three distinct attack types: brute-force login attacks (30 failed logins from 4 IPs), SQL injection (10 attempts from 3 IPs), and directory traversal (11 attempts from 3 IPs). The attacks targeted the login endpoints (/login, /admin/login, /api/login, /wp-login.php), database-backed pages and APIs (/search, /products, /login, /api/items), and file-serving paths (/download, /static, /files, /img, /view, /get). One IP, 141.98.10.33, used all three attack types within about four minutes. The overall severity is HIGH because the log contains signs that some attacks may have succeeded: 203.0.113.42 received a 200 response to POST /login at 08:46:00, immediately after 12 failed logins, and this was the only successful POST to a login endpoint by any of the attacker IPs, which suggests a possibly compromised account. In addition, ' OR 1=1 requests from 185.220.101.5 and 141.98.10.33 returned 200, all three DROP TABLE requests that were not blocked returned 500, and a traversal request for /etc/hosts from 88.198.50.20 returned 200. The log records only response codes, so these outcomes need to be confirmed against application and database records.
+
+2. Attack Summary
+
+Attack Type         | Attacker IP   | First Seen                 | Last Seen                  | Attempts
+--------------------|---------------|----------------------------|----------------------------|---------
+Brute Force         | 203.0.113.42  | 15/Mar/2024:08:45:00 +0000 | 15/Mar/2024:08:45:33 +0000 | 12
+Brute Force         | 198.51.100.77 | 15/Mar/2024:10:00:00 +0000 | 15/Mar/2024:10:01:20 +0000 | 5
+Brute Force         | 100.64.8.9    | 15/Mar/2024:10:40:00 +0000 | 15/Mar/2024:11:40:00 +0000 | 7
+Brute Force         | 141.98.10.33  | 15/Mar/2024:12:00:00 +0000 | 15/Mar/2024:12:00:20 +0000 | 6
+SQL Injection       | 51.77.72.9    | 15/Mar/2024:09:10:05 +0000 | 15/Mar/2024:09:15:05 +0000 | 6
+SQL Injection       | 185.220.101.5 | 15/Mar/2024:11:20:00 +0000 | 15/Mar/2024:11:21:00 +0000 | 2
+SQL Injection       | 141.98.10.33  | 15/Mar/2024:12:02:00 +0000 | 15/Mar/2024:12:04:00 +0000 | 2
+Directory Traversal | 88.198.50.20  | 15/Mar/2024:09:40:00 +0000 | 15/Mar/2024:09:40:42 +0000 | 7
+Directory Traversal | 45.33.32.156  | 15/Mar/2024:11:30:00 +0000 | 15/Mar/2024:11:32:00 +0000 | 3
+Directory Traversal | 141.98.10.33  | 15/Mar/2024:12:03:00 +0000 | 15/Mar/2024:12:03:00 +0000 | 1
+
+3. Recommended Actions
+
+Brute Force: Enforce rate limiting and temporary account lockout after repeated failed logins on all login endpoints.
+
+SQL Injection: Use parameterized queries for all database access so that user input is never executed as SQL.
+
+Directory Traversal: Resolve each requested file path to its canonical form and reject any path outside an allowed base directory.

@@ -1,0 +1,54 @@
+BLUE TEAM INVESTIGATION FINDINGS
+
+1. Brute Force Attack
+Attacker IP: 203.0.113.42
+First Attempt: 15/Mar/2024:08:45:00 +0000
+Last Attempt: 15/Mar/2024:08:45:33 +0000
+Total Attempts: 12
+
+Attacker IP: 198.51.100.77
+First Attempt: 15/Mar/2024:10:00:00 +0000
+Last Attempt: 15/Mar/2024:10:01:20 +0000
+Total Attempts: 5
+
+Attacker IP: 100.64.8.9
+First Attempt: 15/Mar/2024:10:40:00 +0000
+Last Attempt: 15/Mar/2024:11:40:00 +0000
+Total Attempts: 7
+
+Attacker IP: 141.98.10.33
+First Attempt: 15/Mar/2024:12:00:00 +0000
+Last Attempt: 15/Mar/2024:12:00:20 +0000
+Total Attempts: 6
+
+2. SQL Injection
+Attacker IP: 51.77.72.9
+First Attempt: 15/Mar/2024:09:10:05 +0000
+Last Attempt: 15/Mar/2024:09:15:05 +0000
+Total Attempts: 6
+
+Attacker IP: 185.220.101.5
+First Attempt: 15/Mar/2024:11:20:00 +0000
+Last Attempt: 15/Mar/2024:11:21:00 +0000
+Total Attempts: 2
+
+Attacker IP: 141.98.10.33
+First Attempt: 15/Mar/2024:12:02:00 +0000
+Last Attempt: 15/Mar/2024:12:04:00 +0000
+Total Attempts: 2
+
+3. Directory Traversal
+Attacker IP: 88.198.50.20
+First Attempt: 15/Mar/2024:09:40:00 +0000
+Last Attempt: 15/Mar/2024:09:40:42 +0000
+Total Attempts: 7
+
+Attacker IP: 45.33.32.156
+First Attempt: 15/Mar/2024:11:30:00 +0000
+Last Attempt: 15/Mar/2024:11:32:00 +0000
+Total Attempts: 3
+
+Attacker IP: 141.98.10.33
+First Attempt: 15/Mar/2024:12:03:00 +0000
+Last Attempt: 15/Mar/2024:12:03:00 +0000
+Total Attempts: 1
