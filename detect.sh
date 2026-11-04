@@ -33,10 +33,17 @@ SENSITIVE_FILE_REGEX = re.compile(
     r"(?<![\w-])(?:" + "|".join(map(re.escape, SENSITIVE_FILES)) + r")(?![\w-])",
     re.IGNORECASE,
 )
-BOLD_RED = "\033[1;31m"
-BOLD = "\033[1m"
-CYAN = "\033[36m"
+SOC_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
+HIGH = "HIGH"
+MEDIUM = "MEDIUM"
+LOW = "LOW"
+HIGH_SEVERITY_STATUS_PREFIXES = ("2", "5")  # 2xx and 5xx responses
 RESET = "\033[0m"
+SEVERITY_COLORS = {
+    HIGH: "\033[1;31m",  # Red
+    MEDIUM: "\033[1;38;5;208m",  # Orange
+    LOW: "\033[1;33m",  # Yellow
+}
 
 
 def decrypt_line(line, shifts):
@@ -80,12 +87,17 @@ def parse_log_line(line):
     return fields[0], timestamp, quoted_parts[1], quoted_parts[2].split()[0]
 
 
-def record_attempt(attempts, ip, timestamp):
-    """Add one attempt to an IP's count and update its first and last timestamps."""
+def record_attempt(attempts, ip, timestamp, request, status):
+    """Add one attempt to an IP's details.
+
+    Updates the count and the first and last timestamps, and keeps the request
+    so that it can be reported on its own line.
+    """
     if ip not in attempts:
-        attempts[ip] = {"count": 0, "first": timestamp, "last": timestamp}
+        attempts[ip] = {"count": 0, "first": timestamp, "last": timestamp, "requests": []}
     attempts[ip]["count"] += 1
     attempts[ip]["last"] = timestamp
+    attempts[ip]["requests"].append((timestamp, request, status))
 
 
 def detect_repeated_status(lines, target_status, threshold):
@@ -95,9 +107,9 @@ def detect_repeated_status(lines, target_status, threshold):
         parsed = parse_log_line(line)
         if parsed is None:
             continue
-        ip, timestamp, _, status = parsed
+        ip, timestamp, request, status = parsed
         if status == target_status:
-            record_attempt(attempts, ip, timestamp)
+            record_attempt(attempts, ip, timestamp, request, status)
     return {
         ip: details
         for ip, details in attempts.items()
@@ -122,9 +134,9 @@ def detect_sql_injection(lines):
         parsed = parse_log_line(line)
         if parsed is None:
             continue
-        ip, timestamp, request, _ = parsed
+        ip, timestamp, request, status = parsed
         if any(pattern in request for pattern in SQL_INJECTION_PATTERNS):
-            record_attempt(attempts, ip, timestamp)
+            record_attempt(attempts, ip, timestamp, request, status)
     return attempts
 
 
@@ -135,9 +147,9 @@ def detect_directory_traversal(lines):
         parsed = parse_log_line(line)
         if parsed is None:
             continue
-        ip, timestamp, request, _ = parsed
+        ip, timestamp, request, status = parsed
         if DIRECTORY_TRAVERSAL_REGEX.search(request):
-            record_attempt(attempts, ip, timestamp)
+            record_attempt(attempts, ip, timestamp, request, status)
     return attempts
 
 
@@ -148,9 +160,9 @@ def detect_sensitive_files(lines):
         parsed = parse_log_line(line)
         if parsed is None:
             continue
-        ip, timestamp, request, _ = parsed
+        ip, timestamp, request, status = parsed
         if SENSITIVE_FILE_REGEX.search(request):
-            record_attempt(attempts, ip, timestamp)
+            record_attempt(attempts, ip, timestamp, request, status)
     return attempts
 
 
@@ -194,40 +206,73 @@ def colorize(text, color):
     return text
 
 
-def print_alerts(attackers, attack_name, attempt_label):
-    """Print an alert and the attack details for each attacker of one attack type."""
+def format_timestamp(timestamp):
+    """Return a log timestamp in the SOC format, such as 2024-03-15 09:22:45."""
+    return parse_timestamp(timestamp).strftime(SOC_TIMESTAMP_FORMAT)
+
+
+def format_time_range(details):
+    """Return the first and last attempt times of an attacker's details."""
+    first = format_timestamp(details["first"])
+    last = format_timestamp(details["last"])
+    return f"first attempt {first}, last attempt {last}"
+
+
+def sanitize(text):
+    """Replace non-printable characters, so log data cannot send terminal escape codes."""
+    return "".join(char if char.isprintable() else "?" for char in text)
+
+
+def print_alert(severity, timestamp, message):
+    """Print one SOC-style alert line, with the severity colored."""
+    severity_tag = colorize(f"[{severity}]", SEVERITY_COLORS[severity])
+    print(f"[{format_timestamp(timestamp)}] {severity_tag} {message}")
+
+
+def print_request_alerts(attackers, attack_name, other_severity):
+    """Print one alert per matching request, in time order.
+
+    A request is HIGH if it got a 2xx or 5xx response, and other_severity
+    otherwise.
+    """
+    alerts = [
+        (timestamp, ip, request, status)
+        for ip, details in attackers.items()
+        for timestamp, request, status in details["requests"]
+    ]
+    for timestamp, ip, request, status in sorted(
+        alerts, key=lambda alert: parse_timestamp(alert[0])
+    ):
+        severity = HIGH if status.startswith(HIGH_SEVERITY_STATUS_PREFIXES) else other_severity
+        message = f"{attack_name} detected from {ip}: {sanitize(request)} (status {status})"
+        print_alert(severity, timestamp, message)
+
+
+def print_repeated_status_alerts(attackers, attack_name, count_label):
+    """Print one HIGH alert per IP, since these attacks are only found by counting."""
     for ip, details in attackers.items():
-        tag = colorize("[ALERT]", BOLD_RED)
-        message = colorize(
-            f"{attack_name} from {ip} ({details['count']} {attempt_label})", BOLD
+        message = (
+            f"{attack_name} detected from {ip} "
+            f"({details['count']} {count_label}, {format_time_range(details)})"
         )
-        print(f"{tag} {message}")
-        print(f"  {colorize('Attacker IP:', CYAN)} {ip}")
-        print(f"  {colorize('First Attempt:', CYAN)} {details['first']}")
-        print(f"  {colorize('Last Attempt:', CYAN)} {details['last']}")
-        print(f"  {colorize('Total Attempts:', CYAN)} {details['count']}")
+        print_alert(HIGH, details["last"], message)
 
 
 def print_multiple_attack_alerts(attackers):
-    """Print an alert and the attack details for each IP using several attack types.
+    """Print one HIGH alert per IP using several attack types.
 
     Each type's count is shown separately rather than as a total, because one
     request can count towards two types (an SQL injection that returns 403).
     """
     for ip, details in attackers.items():
-        tag = colorize("[ALERT]", BOLD_RED)
-        message = colorize(
-            f"Multiple attack types from {ip} ({len(details['types'])} attack types)",
-            BOLD,
-        )
         attack_types = ", ".join(
             f"{name} ({count})" for name, count in details["types"].items()
         )
-        print(f"{tag} {message}")
-        print(f"  {colorize('Attacker IP:', CYAN)} {ip}")
-        print(f"  {colorize('Attack Types:', CYAN)} {attack_types}")
-        print(f"  {colorize('First Attempt:', CYAN)} {details['first']}")
-        print(f"  {colorize('Last Attempt:', CYAN)} {details['last']}")
+        message = (
+            f"Multiple attack types detected from {ip}: {attack_types} "
+            f"({format_time_range(details)})"
+        )
+        print_alert(HIGH, details["last"], message)
 
 
 def main():
@@ -279,11 +324,11 @@ def main():
             "Sensitive files": sensitive_file_attackers,
         }
     )
-    print_alerts(brute_force_attackers, "Brute force", "failed logins")
-    print_alerts(sql_injection_attackers, "SQL injection", "attempts")
-    print_alerts(directory_traversal_attackers, "Directory traversal", "attempts")
-    print_alerts(repeated_403_attackers, "Repeated 403 responses", "responses")
-    print_alerts(sensitive_file_attackers, "Sensitive file access", "requests")
+    print_repeated_status_alerts(brute_force_attackers, "Brute force", "failed logins")
+    print_request_alerts(sql_injection_attackers, "SQL injection", LOW)
+    print_request_alerts(directory_traversal_attackers, "Directory traversal", MEDIUM)
+    print_repeated_status_alerts(repeated_403_attackers, "Repeated 403 responses", "responses")
+    print_request_alerts(sensitive_file_attackers, "Sensitive file access", MEDIUM)
     print_multiple_attack_alerts(multiple_attack_attackers)
 
     if (
